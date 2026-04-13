@@ -45,6 +45,10 @@ type messageCreatedEventBody struct {
 	IsCiting bool   `json:"is_citing"`
 }
 
+type channelPathResponse struct {
+	Path string `json:"path"`
+}
+
 func NewMessageReceiver() *MessageReceiver {
 	return &MessageReceiver{
 		processor: &messageProcessor{
@@ -231,15 +235,28 @@ func fetchChannelIDs() (map[string]struct{}, map[string]struct{}, error) {
 }
 
 func fetchIsDMChannel(channelID string) (bool, error) {
-	client := traq.NewAPIClient(traq.NewConfiguration())
-	auth := context.WithValue(context.Background(), traq.ContextAccessToken, repo.UserAccessToken)
-
-	channelPath, _, err := client.ChannelApi.GetChannelPath(auth, channelID).Execute()
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://q.trap.jp/api/v3/channels/%s/path", channelID), nil)
 	if err != nil {
 		return false, err
 	}
+	req.Header.Set("Authorization", authorizationScheme+" "+repo.UserAccessToken)
 
-	return channelPath.GetPath() == "", nil
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("failed to fetch channel path: status=%d", resp.StatusCode)
+	}
+
+	var channelPath channelPathResponse
+	if err := json.NewDecoder(resp.Body).Decode(&channelPath); err != nil {
+		return false, err
+	}
+
+	return channelPath.Path == "", nil
 }
 
 func (c *dmChannelCache) contains(channelID string) bool {
