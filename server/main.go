@@ -30,8 +30,8 @@ func main() {
 		slog.Error(fmt.Sprintf("Failed to set up: %v", err))
 	}
 
-	messagePoller := message.NewMessagePoller()
-	go messagePoller.Run()
+	messageReceiver := message.NewMessageReceiver()
+	go messageReceiver.Run()
 
 	instance.Logger.Fatal(instance.Start(":8080"))
 }

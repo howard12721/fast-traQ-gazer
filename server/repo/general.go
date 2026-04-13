@@ -17,6 +17,7 @@ import (
 var (
 	db          *sqlx.DB
 	AccessToken = os.Getenv("BOT_ACCESS_TOKEN")
+	UserAccessToken = os.Getenv("USER_ACCESS_TOKEN")
 	dbUsername  = os.Getenv("DB_USERNAME")
 	dbPort      = os.Getenv("DB_PORT")
 	dbHostname  = os.Getenv("DB_HOSTNAME")
