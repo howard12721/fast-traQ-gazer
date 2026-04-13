@@ -32,8 +32,8 @@ type wsEvent struct {
 }
 
 type messageCreatedEventBody struct {
-	ID string `json:"id"`
-	IsCiting bool  `json:"is_citing"`
+	ID string 		`json:"id"`
+	IsCiting bool   `json:"is_citing"`
 }
 
 func NewMessageReceiver() *MessageReceiver {
