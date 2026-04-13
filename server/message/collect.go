@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"traQ-gazer/model"
 	"traQ-gazer/repo"
@@ -24,6 +25,14 @@ const (
 
 type MessageReceiver struct {
 	processor *messageProcessor
+	dmCache   dmChannelCache
+}
+
+type dmChannelCache struct {
+	mu          sync.RWMutex
+	ids         map[string]struct{}
+	knownIDs    map[string]struct{}
+	initialized bool
 }
 
 type wsEvent struct {
@@ -32,7 +41,7 @@ type wsEvent struct {
 }
 
 type messageCreatedEventBody struct {
-	ID string 		`json:"id"`
+	ID       string `json:"id"`
 	IsCiting bool   `json:"is_citing"`
 }
 
@@ -40,6 +49,10 @@ func NewMessageReceiver() *MessageReceiver {
 	return &MessageReceiver{
 		processor: &messageProcessor{
 			queue: make(chan *traq.Message),
+		},
+		dmCache: dmChannelCache{
+			ids:      make(map[string]struct{}),
+			knownIDs: make(map[string]struct{}),
 		},
 	}
 }
@@ -117,6 +130,15 @@ func (m *MessageReceiver) handleEvent(payload []byte) error {
 		return err
 	}
 
+	isDM, err := m.isDMChannel(message.ChannelId)
+	if err != nil {
+		return err
+	}
+	if isDM {
+		slog.Info(fmt.Sprintf("Skip DM channel message: %s", message.Id))
+		return nil
+	}
+
 	m.processor.enqueue(message)
 	return nil
 }
@@ -151,6 +173,115 @@ func fetchMessage(messageID string) (*traq.Message, error) {
 	}
 
 	return message, nil
+}
+
+func (m *MessageReceiver) isDMChannel(channelID string) (bool, error) {
+	if channelID == "" {
+		return false, nil
+	}
+
+	if !m.dmCache.isInitialized() {
+		dmChannelIDs, knownChannelIDs, err := fetchChannelIDs()
+		if err != nil {
+			return false, err
+		}
+		m.dmCache.seed(dmChannelIDs, knownChannelIDs)
+	}
+
+	if m.dmCache.contains(channelID) {
+		return true, nil
+	}
+
+	if m.dmCache.knows(channelID) {
+		return false, nil
+	}
+
+	isDM, err := fetchIsDMChannel(channelID)
+	if err != nil {
+		return false, err
+	}
+
+	m.dmCache.mark(channelID, isDM)
+	return isDM, nil
+}
+
+func fetchChannelIDs() (map[string]struct{}, map[string]struct{}, error) {
+	client := traq.NewAPIClient(traq.NewConfiguration())
+	auth := context.WithValue(context.Background(), traq.ContextAccessToken, repo.UserAccessToken)
+
+	channelList, _, err := client.ChannelApi.GetChannels(auth).IncludeDm(true).Execute()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	dmChannelIDs := make(map[string]struct{}, len(channelList.GetDm()))
+	for _, dmChannel := range channelList.GetDm() {
+		dmChannelIDs[dmChannel.GetId()] = struct{}{}
+	}
+
+	knownChannelIDs := make(map[string]struct{}, len(channelList.GetPublic())+len(channelList.GetDm()))
+	for _, channel := range channelList.GetPublic() {
+		knownChannelIDs[channel.GetId()] = struct{}{}
+	}
+	for _, dmChannel := range channelList.GetDm() {
+		knownChannelIDs[dmChannel.GetId()] = struct{}{}
+	}
+
+	return dmChannelIDs, knownChannelIDs, nil
+}
+
+func fetchIsDMChannel(channelID string) (bool, error) {
+	client := traq.NewAPIClient(traq.NewConfiguration())
+	auth := context.WithValue(context.Background(), traq.ContextAccessToken, repo.UserAccessToken)
+
+	channelPath, _, err := client.ChannelApi.GetChannelPath(auth, channelID).Execute()
+	if err != nil {
+		return false, err
+	}
+
+	return channelPath.GetPath() == "", nil
+}
+
+func (c *dmChannelCache) contains(channelID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	_, ok := c.ids[channelID]
+	return ok
+}
+
+func (c *dmChannelCache) knows(channelID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	_, ok := c.knownIDs[channelID]
+	return ok
+}
+
+func (c *dmChannelCache) isInitialized() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.initialized
+}
+
+func (c *dmChannelCache) seed(ids map[string]struct{}, knownIDs map[string]struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.ids = ids
+	c.knownIDs = knownIDs
+	c.initialized = true
+}
+
+func (c *dmChannelCache) mark(channelID string, isDM bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.knownIDs[channelID] = struct{}{}
+	if isDM {
+		c.ids[channelID] = struct{}{}
+	}
 }
 
 // 通知メッセージの検索と通知処理のjobを処理する
